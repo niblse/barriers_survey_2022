@@ -1,0 +1,951 @@
+---
+title: "Statistical analysis of NIBLSE Survey 2 Data"
+author: "William Morgan (College of Wooster)"
+date: "Sep 22, 2023"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+These R Notebooks presents R code for statistical analyses of 2nd NIBLSE Survey data. 
+
+<!--
+#### Prerequisites
+
+Clear the Global Environment and load R packages that will be needed later. 
+-->
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+rm(list = ls())
+library(tidyverse)
+library(ggmosaic)
+library(infer)
+library(moderndive)
+```
+
+# Chapter 1: Overview of survey data
+
+This chapter starts with the `Merged_Data_Anonymous` set produced in Chapter 0.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+Merged_Data_Anonymous <- read_csv("Merged_Data_Anonymous.csv")
+```
+
+### CUREs/SUREs
+
+```{r echo=FALSE}
+TeachBioinfo <- Merged_Data_Anonymous %>% 
+  filter(Q3TeachBioinfor != "I do not include bioinformatics in my teaching and do not plan to do so") %>%
+  filter(Q3TeachBioinfor != "I do not include bioinformatics in my teaching at this time, but do plan to do so")
+
+nCures <- str_subset(TeachBioinfo$`Q24CURE_SURE`, "part") %>% length()
+```
+
+Of the `r tally(TeachBioinfo) %>% pull()` instructors who teach any bioinformatics in a life science course, `r nCures` used a CURE or SURE to do so. 
+
+### Is more undergraduate bioinformatics content needed at your institution?
+
+```{r echo=FALSE}
+MoreBioinfo <- Merged_Data_Anonymous %>% count(Q5MoreCourses) %>% 
+  drop_na(Q5MoreCourses) 
+nYes <- MoreBioinfo %>% filter(Q5MoreCourses == "Yes") %>% pull()
+nMaybe <- MoreBioinfo %>% filter(Q5MoreCourses == "Maybe") %>% pull()
+```
+
+Of the `r sum(MoreBioinfo$n)` participants who answered if more bioinformatics content is needed in undergraduate courses at their instituion, `r nYes + nMaybe`  (`r 100 * (nYes + nMaybe) / sum(MoreBioinfo$n) %>% round()`%) said "Yes" (`r nYes`) or "Maybe" (`r nMaybe`).
+
+### Barriers
+
+```{r echo=FALSE}
+Plans_Teach <- Merged_Data_Anonymous %>% filter(Q3TeachBioinfor != "I do not include bioinformatics in my teaching and do not plan to do so")
+Plans_barriers <- Plans_Teach %>% 
+  count(Q7FacedBarriers) %>% 
+  drop_na() 
+nPlans_barriers <- Plans_barriers %>% filter(Q7FacedBarriers == "Yes") %>% pull()
+```
+
+Of the `r sum(Plans_barriers$n)` instructors who do or plan to include bioinformatics content, `r nPlans_barriers` (`r 100 * nPlans_barriers / sum(Plans_barriers$n %>% round())`%) reported facing barriers to integrating bioinformatics into their teaching. 
+
+### Count data for each identifier variable
+
+Let's visualize the count of each identifier variable (gender, ethnicity, etc.) using a count table when the number of unique responses (levels) is three or less and a bar graph when the number is larger. (Here, we ignore identifier variables encoded numerically in favor of those encoded with character strings.)
+
+```{r echo=FALSE, fig.width=8.0}
+library(skimr)
+# get the names of variables with a few levels
+few_levels <- Merged_Data_Anonymous %>% 
+  dplyr::select(Gender:`Q33 Which of the following represents your highest academic degree?`) %>% 
+  skim_without_charts(where(is.character)) %>% 
+  dplyr::filter(character.n_unique < 4) %>% 
+  pull(skim_variable)
+# count the responses for each variable
+few_levels %>% 
+  map(function(x) {
+    Merged_Data_Anonymous %>% count(.data[[x]])
+    }
+)
+
+# get the names of variables with 4-20 levels
+many_levels <- Merged_Data_Anonymous %>% 
+  dplyr::select(Gender:`Q33 Which of the following represents your highest academic degree?`) %>% 
+  skim_without_charts(where(is.character)) %>% 
+  dplyr::filter(character.n_unique >= 4 & character.n_unique <= 20) %>% 
+  pull(skim_variable)
+# plot the responses for each variable
+many_levels %>% 
+  map(function(x) {
+    Merged_Data_Anonymous %>% 
+      ggplot(aes(x = .data[[x]])) + 
+        geom_bar(fill = "red") +
+  theme(axis.text.x=element_text(angle=45,hjust=1))
+    }
+)
+
+```
+
+## Is Carnegie classification of your current institution associated with faculty gender proportions?
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# make count table & get proportions for each gender
+count_table <- Merged_Data_Anonymous %>%
+  group_by(Gender, BASIC2018_bins_text.Current) %>% 
+  summarise(count = n()) %>% 
+  mutate(proportion = count / sum(count))
+
+# hypothesis test: chi-squared
+test_results <- Merged_Data_Anonymous %>% 
+  chisq_test(BASIC2018_bins_text.Current ~ Gender)
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# view mosaic plot
+Merged_Data_Anonymous %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(BASIC2018_bins_text.Current),
+                  fill = Gender)) +
+  labs(x = "Gender", 
+       y = "Proportion",
+       subtitle = "Gender composition based on Carnegie classification") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "none") +
+  theme(axis.text.x=element_text(angle=45,hjust=1))
+```
+# Associations between identifier variables and survey responses
+
+Are there any associations between particular identifier and response variables? In addition to statistical tests, associations are visualized using mosaic plots, which present the frequency of each explanatory (x axis) and response (y-axis) variable. (Note: Non-responses are removed from the following analyses.) 
+
+##  Do non-male faculty experience more barriers/more severe barriers than male faculty? 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# make count table & get proportions for each gender
+count_table <- Merged_Data_Anonymous %>%
+  group_by(Gender, Q7FacedBarriers) %>% 
+  summarise(count = n()) %>% 
+  mutate(proportion = count / sum(count))
+prop_f <- count_table %>% filter(Gender == "F" & Q7FacedBarriers == "Yes") %>% pull()
+prop_m <- count_table %>% filter(Gender == "M" & Q7FacedBarriers == "Yes") %>% pull()
+prop_u <- count_table %>% filter(Gender == "U" & Q7FacedBarriers == "Yes") %>% pull()
+
+# hypothesis test: chi-squared
+test_results <- Merged_Data_Anonymous %>% 
+  filter(!is.na(Q7FacedBarriers)) %>%
+  chisq_test(Q7FacedBarriers ~ Gender)
+```
+
+There is a significant association between gender and encountering barriers (p-val = `r test_results %>% pull() %>% signif(digits = 2)`). Compared to males, other genders are more likely to report barriers to integrating bioinformatics into their teaching (M = `r prop_m %>% signif(2) * 100`%, F = `r prop_f %>% signif(2) * 100`%, U = `r prop_u %>% signif(2) * 100`%). 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# view mosaic plot
+Merged_Data_Anonymous %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(Gender),
+                  fill = Q7FacedBarriers)) +
+  labs(x = "Gender", 
+       y = "Proportion",
+       subtitle = "Have you faced any barriers integrating bioinformatics into your teaching?") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "none") 
+
+```
+
+### Are the gender differences due to any particular type of barrier?
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# Retrieve "I lack" agree/disagree barrier columns & get agree counts
+Barriers_gender_df <- Merged_Data_Anonymous %>% 
+select(Gender, `I lack expertise in bioinformatics`:`My student population lacks interest in bioinformatics....20`) %>% 
+  pivot_longer(!Gender, names_to = "Barrier", values_to = "Response") 
+Barriers_gender_table <- Barriers_gender_df %>% 
+  filter(!is.na(Response)) %>% 
+  count(Gender, Barrier, Response) 
+
+# hypothesis test: chi-squared
+Barriers_char <- unique(Barriers_gender_df$Barrier)
+
+test_results <- Barriers_char %>%
+  map_df(function(x) { 
+    Barriers_gender_df %>% 
+      filter(Gender != "U") %>% 
+  filter(!is.na(Response)) %>% 
+  filter(Barrier == x) %>% 
+  chisq_test(Response ~ Gender)
+  }
+)  
+  
+test_results <- test_results %>% 
+  mutate(Barrier = Barriers_char,
+         adj.p_val = p.adjust(p_value, method = "fdr")
+         ) %>% 
+  select(Barrier, everything())
+
+sig_results <- test_results %>% 
+  filter(adj.p_val < 0.05)
+
+```
+
+Of those respondents who reported facing a barrier to integrating bioinformatics into their teaching, we sought to identify associations between gender and specific barriers. Of the `r nrow(test_results)` queried barriers, `r nrow(sig_results)` (`r sig_results$Barrier`) exhibited a significant difference among genders (adj. p-value = `r sig_results %>% pull %>% signif(2)`). 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.height=8}
+# view mosaic plot
+Barriers_gender_df %>% 
+  filter(!is.na(Response)) %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(Gender),
+                  fill = Response)) +
+  labs(x = "Gender", 
+       y = "Proportion",
+       subtitle = "Which barriers have you faced integrating bioinformatics into your teaching?"
+       ) +
+  facet_wrap("Barrier", ncol = 2, strip.position = "bottom") +
+  theme_classic(base_size = 8) +
+  theme(legend.position = "none") 
+```
+
+The difference between genders is more apparent when we explore the severity of each challenge, where the non-responses (NA) were converted to "Not a challenge." (Due to small numbers, U gender was removed to meet the assumptions of statistical testing.) 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+BarriersQ8_gender_df <- Merged_Data_Anonymous %>% 
+select(Gender, `I lack expertise in bioinformatics.`:`My student population lacks interest in bioinformatics....30`) %>% 
+  filter(Gender != "U") %>% 
+  pivot_longer(!Gender, names_to = "Barrier", values_to = "Response") %>% 
+  mutate(Response = replace_na(Response, "Not a challenge")) %>% # change NAs
+  mutate(Response = fct_relevel(Response, "Not a challenge")) # ordered by severity
+
+# hypothesis test: chi-squared
+BarriersQ8_char <- unique(BarriersQ8_gender_df$Barrier)
+test_results <- BarriersQ8_char %>%
+  map_df(function(x) { 
+    BarriersQ8_gender_df %>% 
+  filter(Barrier == x) %>% 
+  chisq_test(Response ~ Gender)
+  }
+)  
+  
+test_results <- test_results %>% 
+  mutate(Barrier = BarriersQ8_char,
+         adj.p_val = p.adjust(p_value, method = "fdr")
+         ) %>% 
+  select(Barrier, everything())
+sig_results <- test_results %>% 
+  filter(adj.p_val < 0.05)
+
+# make count table with proportions for significant barriers
+count_table <- sig_results$Barrier %>%
+  map(function(x) { 
+    BarriersQ8_gender_df %>% 
+      filter(Barrier == x) %>% 
+      group_by(Gender, Response) %>% 
+      summarise(count = n()) %>% 
+      mutate(percentage = round(100 * count / sum(count), 1)) %>% 
+      select(-count) %>% 
+      pivot_wider(names_from = Gender, values_from = percentage)
+    }
+  )
+```
+
+Of those respondents who answered the barrier question (Q7 or Q21, response 1), we sought to identify associations between gender and the severity of each barrier. Of the `r nrow(test_results)` queried barriers, `r nrow(sig_results)` (`r sig_results$Barrier`) exhibited a significant difference among genders (adj. p-value = `r sig_results %>% pull %>% signif(2)`). 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.height=8}
+# view mosaic plot
+BarriersQ8_gender_df %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(Gender),
+                  fill = Response)) +
+  labs(x = "Gender", 
+       y = "Proportion",
+       subtitle = "How severe is this barrier to integrating bioinformatics into your teaching?"
+       ) +
+  facet_wrap("Barrier", ncol = 2, strip.position = "bottom") +
+  theme_classic(base_size = 8) +
+  theme(legend.position = "none") 
+```
+
+##  Is there an association between Carnegie classification of current institution and barriers to integrating bioinformatics?
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# make count table
+count_table <- Merged_Data_Anonymous %>%
+  group_by(BASIC2018_bins_text.Current,Q7FacedBarriers) %>% 
+  summarise(count = n()) %>% 
+  mutate(proportion = count / sum(count))
+prop_bacc <- count_table %>% filter(Q7FacedBarriers == "Yes" & BASIC2018_bins_text.Current == "Baccalaureate Colleges") %>% 
+  pull() %>% signif(3)
+prop_Doct <- count_table %>% filter(Q7FacedBarriers == "Yes" & BASIC2018_bins_text.Current == "Doctoral/Professional Universities") %>% 
+  pull() %>% signif(3)
+prop_all <- Merged_Data_Anonymous %>%
+  group_by(Q7FacedBarriers) %>% 
+  summarise(count = n()) %>% 
+  mutate(proportion = count / sum(count)) %>% 
+    filter(Q7FacedBarriers == "Yes") %>% 
+  pull() %>% signif(3)
+
+# flag those with few counts
+# hypothesis test: chi-squared
+test_results <- Merged_Data_Anonymous %>% 
+  filter(BASIC2018_bins.Current %in% c(1, 3, 4, 5)) %>% # remove those with too few number
+  chisq_test(Q7FacedBarriers ~ BASIC2018_bins_text.Current)
+# chisq.test(x=Merged_Data_Anonymous$BASIC2018_bins_text, y=Merged_Data_Anonymous$Q7FacedBarriers)$expected  
+```
+
+Do faculty at some institution types more frequently report barriers to integrating bioinformatics into their teaching? There is a significant association between Carnegie classification and encountering barriers (p-value = `r test_results %>% pull() %>% signif(digits = 2)`). For example, faculty at baccalaureate colleges reported facing barriers more frequently than average (`r prop_bacc * 100`% vs. `r prop_all * 100`%), while doctoral institutions reported facing barriers less frequently (`r prop_Doct * 100`%).
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# reorder levels for plotting
+Merged_Data_Anonymous$BASIC2018_bins_text <- fct_relevel(Merged_Data_Anonymous$BASIC2018_bins_text.Current, 
+                                           "Doctoral/Professional Universities", 
+                                           after = Inf)
+
+# view mosaic plot
+Merged_Data_Anonymous %>% 
+  filter(BASIC2018_bins.Current %in% c(1, 3, 4, 5)) %>% # remove those with too few number
+  droplevels() %>% # remove unused levels
+  ggplot() +
+  geom_mosaic(aes(x = product(BASIC2018_bins_text.Current),
+                  fill = Q7FacedBarriers)) +
+  labs(x="Institution type", 
+       y = "Proportion",
+       subtitle = "Have you faced any barriers integrating bioinformatics into your teaching?") +
+    theme_classic(base_size = 13) +
+  theme(legend.position = "none") +
+    theme(axis.text.x=element_text(angle=45,hjust=1)) 
+
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# Retrieve "I lack" agree/disagree barrier columns & get agree counts
+Barriers_BASIC2018_df <- Merged_Data_Anonymous %>% 
+  filter(BASIC2018_bins.Current %in% c(1, 3, 4, 5)) %>% # remove those types with too few number
+  droplevels() %>% # remove unused levels
+  select(BASIC2018_bins_text.Current, `I lack expertise in bioinformatics`:`My student population lacks interest in bioinformatics....20`) %>% 
+  pivot_longer(!BASIC2018_bins_text.Current, names_to = "Barrier", values_to = "Response") 
+Barriers_BASIC2018_table <- Barriers_BASIC2018_df %>% 
+  filter(!is.na(Response)) %>% 
+  count(BASIC2018_bins_text.Current, Barrier, Response) 
+
+# hypothesis test: chi-squared
+test_results <- Barriers_char %>%
+  map_df(function(x) { 
+    Barriers_BASIC2018_df %>% 
+  filter(!is.na(Response)) %>% 
+  filter(Barrier == x) %>% 
+  chisq_test(Response ~ BASIC2018_bins_text.Current)
+  }
+)  
+  
+test_results <- test_results %>% 
+  mutate(Barrier = Barriers_char,
+         adj.p_val = p.adjust(p_value, method = "fdr")
+         ) %>% 
+  select(Barrier, everything())
+sig_results <- test_results %>% 
+  filter(adj.p_val < 0.05)
+
+```
+
+Of those respondents who reported facing a barrier to integrating bioinformatics into their teaching, we sought to identify associations between institution type and specific barriers. Of the `r nrow(test_results)` queried barriers, `r nrow(sig_results)` (`r sig_results$Barrier`) exhibited a significant difference among different institutions (adj. p-value = `r sig_results %>% pull %>% signif(2)`). 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.height=8}
+# view mosaic plot
+Barriers_BASIC2018_df %>% 
+  filter(!is.na(Response)) %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(BASIC2018_bins_text.Current),
+                  fill = Response)) +
+  labs(x="Institution type", 
+       y = "Proportion",
+       # subtitle = "Which barriers have you faced integrating bioinformatics into your teaching?"
+       ) +
+  facet_wrap("Barrier", ncol = 2, strip.position = "bottom") +
+  theme_classic(base_size = 8) +
+  theme(legend.position = "none") +
+    theme(axis.text.x=element_text(angle=45,hjust=1)) 
+```
+
+
+## Do URM faculty experience more barriers/more severe barriers to integrating bioinformatics than non-URM faculty? 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# make count table & get proportions for each
+count_table <- Merged_Data_Anonymous %>%
+  filter(!is.na(Q7FacedBarriers)) %>%
+  group_by(URM, Q7FacedBarriers) %>% 
+  summarise(count = n()) %>% 
+  mutate(proportion = count / sum(count))
+prop_URM <- count_table %>% filter(URM == "URM" & Q7FacedBarriers == "Yes") %>% pull()
+n_URM <- count_table %>% filter(URM == "URM") %>% pull(count) %>% sum()
+prop_non <- count_table %>% filter(URM == "non-URM" & Q7FacedBarriers == "Yes") %>% pull()
+n_non <- count_table %>% filter(URM == "non-URM") %>% pull(count) %>% sum()
+
+# hypothesis test: diff in props
+# Calculating the observed statistic
+d_hat <- Merged_Data_Anonymous %>% 
+  filter(!is.na(Q7FacedBarriers)) %>%
+  specify(Q7FacedBarriers ~ URM, success = "Yes") %>% 
+  calculate(stat = "diff in props")
+
+# Then, generating the null distribution,
+null_dist <- Merged_Data_Anonymous %>% 
+  filter(!is.na(Q7FacedBarriers)) %>%
+  specify(Q7FacedBarriers ~ URM, success = "Yes") %>% 
+  hypothesize(null = "independence") %>% 
+  generate(reps = 1000) %>% 
+  calculate(stat = "diff in props")
+  
+# Calculating the p-value from the null distribution and observed statistic,
+p_value <- null_dist %>%
+  get_p_value(obs_stat = d_hat, direction = "two-sided")
+
+# test_results <- Merged_Data_Anonymous %>% 
+#   filter(!is.na(Q7FacedBarriers)) %>%
+#   chisq_test(Q7FacedBarriers ~ URM)
+```
+
+Do faculty who identified as an under-represented minority more frequently report barriers to integrating bioinformatics into their teaching? There is insufficient evidence to indicate a significant association between URM faculty status and encountering barriers (p-val = `r p_value %>% signif(digits = 2)`), although URM faculty are somewhat more likely to report barriers to integrating bioinformatics into their teaching than non-URM faculty (URM = `r prop_URM %>% signif(2) * 100`%, n = `r n_URM`; non-URM = `r prop_non %>% signif(2) * 100`%, n = `r n_non`). 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# view mosaic plot
+Merged_Data_Anonymous %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(URM),
+                  fill = Q7FacedBarriers)) +
+  labs(x = "URM status", 
+       y = "Proportion",
+       subtitle = "Have you faced any barriers integrating bioinformatics into your teaching?") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "none") 
+
+```
+
+Since the difference wasn't statistically significant, specific barriers were not analyzed for an association with URM status. 
+
+The effect of URM is more apparent when we explore the severity of each challenge, where the non-responses (NA) were converted to "Not a challenge." 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+BarriersQ8_URM_df <- Merged_Data_Anonymous %>% 
+  select(URM, `I lack expertise in bioinformatics.`:`My student population lacks interest in bioinformatics....30`) %>% 
+  pivot_longer(!URM, names_to = "Barrier", values_to = "Response") %>% 
+  mutate(Response = replace_na(Response, "Not a challenge")) %>% # change NAs
+  mutate(Response = fct_relevel(Response, "Not a challenge")) # ordered by severity
+
+# hypothesis test: chi-squared
+BarriersQ8_char <- unique(BarriersQ8_URM_df$Barrier)
+test_results <- BarriersQ8_char %>%
+  map_df(function(x) { 
+    BarriersQ8_URM_df %>% 
+  filter(Barrier == x) %>% 
+  chisq_test(Response ~ URM)
+  }
+)  
+  
+test_results <- test_results %>% 
+  mutate(Barrier = BarriersQ8_char,
+         adj.p_val = p.adjust(p_value, method = "fdr")
+         ) %>% 
+  select(Barrier, everything())
+sig_results <- test_results %>% 
+  filter(adj.p_val < 0.05)
+
+```
+
+Of those respondents who responded to the barrier question (Q7 or Q21, response 1), we sought to identify associations between URM status and the severity of each barrier. Of the `r nrow(test_results)` queried barriers, `r nrow(sig_results)` (`r sig_results$Barrier`) exhibited a significant difference among genders (adj. p-value = `r sig_results %>% pull %>% signif(2)`). 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.height=8}
+# view mosaic plot
+BarriersQ8_URM_df %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(URM),
+                  fill = Response)) +
+  labs(x = "URM Status", 
+       y = "Proportion",
+       # subtitle = "How severe is this barrier to integrating bioinformatics into your teaching?"
+       ) +
+  facet_wrap("Barrier", ncol = 2, strip.position = "bottom") +
+  theme_classic(base_size = 8) +
+  theme(legend.position = "none") 
+```
+
+## Do faculty at MSIs experience more barriers to integrating bioinformatics? 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# create column to encode four categories of institutions:
+Merged_Data_Anonymous <- Merged_Data_Anonymous %>%
+  mutate(MSI_status = 2*MSI.Current + HBCU.Current + HSI.Current)
+# 2*MSI, no (0); HBCU, no (2) ; HSI, no (0) (453 responses) = 2
+# 2*MSI, yes (1); HBCU, yes (1); HSI, no (0)  (18 responses) = 3
+# 2*MSI, yes (1); HBCU, no (2) ; HSI, no (0) (27 responses) = 4
+# 2*MSI, yes (1); HBCU, no (2); HSI, yes (1) (55 responses) = 5
+
+# make count table & get proportions for each
+count_table <- Merged_Data_Anonymous %>%
+  filter(!is.na(Q7FacedBarriers)) %>%
+  group_by(MSI_status, Q7FacedBarriers) %>% 
+  summarise(count = n()) %>% 
+  mutate(proportion = count / sum(count))
+prop_non <- count_table %>% filter(MSI_status == 2 & Q7FacedBarriers == "Yes") %>% pull()
+n_non <- count_table %>% filter(MSI_status == 2) %>% pull(count) %>% sum()
+prop_HBCU <- count_table %>% filter(MSI_status == 3 & Q7FacedBarriers == "Yes") %>% pull()
+n_HBCU <- count_table %>% filter(MSI_status == 3) %>% pull(count) %>% sum()
+prop_other <- count_table %>% filter(MSI_status == 4 & Q7FacedBarriers == "Yes") %>% pull()
+n_other <- count_table %>% filter(MSI_status == 4) %>% pull(count) %>% sum()
+prop_HSI <- count_table %>% filter(MSI_status == 5 & Q7FacedBarriers == "Yes") %>% pull()
+n_HSI <- count_table %>% filter(MSI_status == 5) %>% pull(count) %>% sum()
+
+# hypothesis test: chi-squared
+# convert to factor for chi-squared test
+Merged_Data_Anonymous <- Merged_Data_Anonymous %>% 
+  mutate(MSI_status = factor(MSI_status, 
+                                labels = c("non-MSI", "HBCU", 
+                                           "Other MSI", "HSI")))
+test_results <- Merged_Data_Anonymous %>%
+  filter(!is.na(Q7FacedBarriers)) %>%
+  chisq_test(Q7FacedBarriers ~ MSI_status)
+```
+
+Do faculty at HBCUs, HSIs or other minority-serving institutions more frequently report barriers to integrating bioinformatics into their teaching than faculty at non-MSI institutions? Although faculty at HBCUs and HSIs more frequently reported barriers to integrating bioinformatics into their teaching than other MSI and non-MSI faculty (HBCU = `r prop_HBCU %>% signif(2) * 100`%, n = `r n_HBCU`; HSI = `r prop_HSI %>% signif(2) * 100`%, n = `r n_HSI`; other-HSI = `r prop_other %>% signif(2) * 100`%, n = `r n_other`; non-MSI = `r prop_non %>% signif(2) * 100`%, n = `r n_non`), there is insufficient evidence to indicate a significant association between MSI faculty status and encountering barriers (p-val = `r test_results$p_value %>% signif(digits = 2)`). 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# view mosaic plot
+Merged_Data_Anonymous %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(MSI_status),
+                  fill = Q7FacedBarriers)) +
+  labs(x = "MSI Institution?", 
+       y = "Proportion",
+       subtitle = "Have you faced any barriers integrating bioinformatics into your teaching?") +
+    theme_classic(base_size = 13) +
+  theme(legend.position = "none") +
+    theme(axis.text.x=element_text(angle=45,hjust=1)) 
+```
+
+Since the difference wasn't statistically significant, specific barriers were not analyzed for an association with MSI faculty.
+
+## Is terminal degree year associated with barriers to integrating bioinformatics?
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# make count table
+count_table <- Merged_Data_Anonymous %>%
+  group_by(`Q14 In which year did you earn your highest academic degree?`,
+           Q7FacedBarriers) %>% 
+  summarise(count = n()) %>% 
+  mutate(proportion = count / sum(count))
+# hypothesis test: chi-squared after removing decades with <10 responses
+Merged_Data_Anonymous <- Merged_Data_Anonymous %>% 
+  filter(`Q14 In which year did you earn your highest academic degree?` %in% c("1980-1989", "1990-1999","2000-2009","2010-2019")) %>% 
+  mutate(Q14DegreeYear = as.factor(`Q14 In which year did you earn your highest academic degree?`))
+test_results <- Merged_Data_Anonymous %>% 
+  filter(!is.na(Q7FacedBarriers)) %>%
+  chisq_test(Q7FacedBarriers ~ Q14DegreeYear)
+```
+
+There is a significant association between between when the highest degree was awarded and how frequently faculty reported barriers to integrating bioinformatics into their teaching (p-val = `r test_results$p_value %>% signif(digits = 2)`). Faculty were more likely to report encountering a barrier if they received their highest degree more recently. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# view mosaic plot
+Merged_Data_Anonymous <- Merged_Data_Anonymous %>% 
+  mutate(Q14DegreeYear = as.factor(`Q14 In which year did you earn your highest academic degree?`))
+Merged_Data_Anonymous %>% 
+  filter(!is.na(Q14DegreeYear)) %>% 
+  filter(Q14DegreeYear %in% c("1980-1989", "1990-1999","2000-2009","2010-2019")) %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(Q14DegreeYear), fill = Q7FacedBarriers)) +
+  labs(x="Year awarded highest degree?", 
+       y="Faced barriers integrating bioinformatics?",
+       caption = "Before 1980, after 2020, and NAs were removed.") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "none") +
+  theme(axis.text.x=element_text(angle=45,hjust=1)) 
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# Retrieve "I lack" agree/disagree barrier columns & get agree counts
+Barriers_DegreeYear_df <- Merged_Data_Anonymous %>% 
+  filter(!is.na(Q14DegreeYear)) %>% 
+  filter(Q14DegreeYear %in% c("1980-1989", "1990-1999","2000-2009","2010-2019")) %>% 
+  droplevels() %>% # remove unused levels for chisq_test
+  select(Q14DegreeYear, `I lack expertise in bioinformatics`:`My student population lacks interest in bioinformatics....20`) %>% 
+  pivot_longer(!Q14DegreeYear, names_to = "Barrier", values_to = "Response") 
+Barriers_DegreeYear_table <- Barriers_DegreeYear_df %>% 
+  filter(!is.na(Response)) %>% 
+  count(Q14DegreeYear, Barrier, Response) 
+
+# hypothesis test: chi-squared
+test_results <- Barriers_char %>%
+  map_df(function(x) {
+    Barriers_DegreeYear_df %>%
+  filter(!is.na(Response)) %>%
+  filter(Barrier == x) %>%
+  # mutate(Q14DegreeYear = as.factor(Q14DegreeYear),
+  #        Response = as.factor(Response)) %>%
+        # count(Q14DegreeYear, Barrier, Response)
+  chisq_test(Response ~ Q14DegreeYear)
+  }
+)
+
+test_results <- test_results %>%
+  mutate(Barrier = Barriers_char,
+         adj.p_val = p.adjust(p_value, method = "fdr")
+         ) %>%
+  select(Barrier, everything())
+sig_results <- test_results %>%
+  filter(adj.p_val < 0.05)
+  # filter(p_value < 0.05)
+
+```
+
+Was there a specific barrier associated with when the highest degree was awarded? Of those respondents who reported facing a barrier to integrating bioinformatics into their teaching, we sought to identify associations between degree year and specific barriers. Of the `r nrow(test_results)` queried barriers, "`r nrow(sig_results)`" exhibited a significant difference among the degree years (adj. p-value < 0.05). 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.height=8}
+# view mosaic plot
+Barriers_DegreeYear_df %>% 
+  filter(!is.na(Response)) %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(Q14DegreeYear),
+                  fill = Response)) +
+  labs(x = "Year when Highest Degree Awarded", 
+       y = "Proportion",
+       # subtitle = "Have you faced any barriers integrating bioinformatics into your teaching?"
+       ) +
+  facet_wrap("Barrier", ncol = 2, strip.position = "bottom") +
+  theme_classic(base_size = 8) +
+  theme(legend.position = "none") 
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# fix Q12 column to remove internal comma
+Merged_Data_Anonymous$`Q12 Which of the following best describes your level of bioinformatics training? Select ALL that apply.` <- Merged_Data_Anonymous$`Q12 Which of the following best describes your level of bioinformatics training? Select ALL that apply.` %>% 
+  str_replace_all(pattern = coll(".,"),
+                  replacement = ".")
+# split multiple Q12 responses at commas
+Merged_Data_Anonymous2 <- Merged_Data_Anonymous %>% 
+  separate(col = `Q12 Which of the following best describes your level of bioinformatics training? Select ALL that apply.`, 
+           into = c("Q12_1", "Q12_2", "Q12_3", "Q12_4", "Q12_5"),
+           sep = ",",
+           remove = FALSE) 
+# collect multiple Q12 responses in one column
+Merged_Data_Anonymous2 <- Merged_Data_Anonymous2 %>% 
+  pivot_longer(cols = starts_with("Q12_"), 
+               names_to = "Position", 
+               names_prefix = "Q12_",
+               values_to = "Q12Training",
+               values_drop_na = TRUE)
+# truncate for fewer response types
+Merged_Data_Anonymous2$Q12Training <- Merged_Data_Anonymous2$Q12Training %>% str_trunc(12) 
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# any grad-level training in bioinformatics?
+Merged_Data_Anonymous$GradTraining <- 
+  Merged_Data_Anonymous$`Q12 Which of the following best describes your level of bioinformatics training? Select ALL that apply.` %>% 
+  str_replace_all("undergraduate", "undergrad") %>% 
+  str_detect("graduate") 
+# make count table & get proportions for each
+count_table <- Merged_Data_Anonymous %>%
+  group_by(Q14DegreeYear, GradTraining) %>% 
+  summarise(count = n()) %>% 
+  mutate(proportion = count / sum(count))
+prop_1980s <- count_table %>% filter(Q14DegreeYear == "1980-1989" & GradTraining == "TRUE") %>% pull()
+prop_1990s <- count_table %>% filter(Q14DegreeYear == "1990-1999" & GradTraining == "TRUE") %>% pull()
+prop_2000s <- count_table %>% filter(Q14DegreeYear == "2000-2009" & GradTraining == "TRUE") %>% pull()
+prop_2010s <- count_table %>% filter(Q14DegreeYear == "2010-2019" & GradTraining == "TRUE") %>% pull()
+# hypothesis test: chi-squared 
+test_results <- Merged_Data_Anonymous %>% 
+  chisq_test(GradTraining ~ Q14DegreeYear)
+```
+
+Do "more experienced" instructors  differ in their bioinformatics training compared to "less experienced" instructors (i.e., those who received their terminal degree more recently)? The overall pattern of bioinformatics training -- with multiple responses allowed per respondent -- did not differ significantly based on year of degree award. However, those who received their highest degree more recently were significantly more likely to have had bioinformatics training in graduate school (1980's = `r prop_1980s %>% signif(2) * 100`%, 1990's = `r prop_1990s %>% signif(2) * 100`%, 2000's = `r prop_2000s %>% signif(2) * 100`%, 2010's = `r prop_2010s %>% signif(2) * 100`%; p-val = `r test_results$p_value %>% signif(2)`).
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# view mosaic plot
+Merged_Data_Anonymous2 %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(Q14DegreeYear), fill = Q12Training)) +
+  labs(x="Year awarded highest degree", 
+       y="Bioinformatics training",
+       caption = "Multiple answers permitted. Before 1980, after 2020, and NAs removed.") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "none") +
+  theme(axis.text.x=element_text(angle=45,hjust=1)) 
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# fix Q3 column to remove internal comma
+Merged_Data_Anonymous2$Q3TeachBioinfor <- Merged_Data_Anonymous2$Q3TeachBioinfor %>% 
+  str_replace_all(pattern = coll(".,"),
+                  replacement = ".")
+# split multiple Q3 responses at commas
+Merged_Data_Anonymous2 <- Merged_Data_Anonymous2 %>% 
+  separate(col = Q3TeachBioinfor, 
+           into = c("Q3_1", "Q3_2", "Q3_3", "Q3_4", "Q3_5"),
+           sep = ",",
+           remove = FALSE) 
+# collect multiple Q3 responses in one column
+Merged_Data_Anonymous2 <- Merged_Data_Anonymous2 %>% 
+  pivot_longer(cols = starts_with("Q3_"), 
+               names_to = "Position3", 
+               names_prefix = "Q3_",
+               values_to = "Q3TeachBioinfo",
+               values_drop_na = TRUE)
+# truncate & filter so only 4 response types (none, some, substantial, dedicated)
+Merged_Data_Anonymous2$Q3TeachBioinfo <- Merged_Data_Anonymous2$Q3TeachBioinfo %>% str_trunc(20)
+Merged_Data_Anonymous2<- Merged_Data_Anonymous2 %>% 
+  filter(Q3TeachBioinfo != " but do plan to d...")
+
+# hypothesis test: chi-squared 
+test_results <- Merged_Data_Anonymous2 %>% 
+  chisq_test(Q3TeachBioinfo ~ Q14DegreeYear)
+```
+
+Is there an association with instructor experience and bioinformatics teaching duties? The overall pattern of bioinformatics teaching duties -- with multiple responses allowed per respondent -- did not differ significantly based on year of degree award (p-val = `r test_results$p_value %>% signif(2)`). 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.height=8}
+# view mosaic plot
+Merged_Data_Anonymous2 %>% 
+  ggplot() +
+  geom_mosaic(aes(x = product(Q14DegreeYear), fill = Q3TeachBioinfo)) +
+  labs(x="Year awarded highest degree", 
+       y= "Do you teach bioinformatics?",
+       caption = "Multiple answers permitted. Before 1980, after 2020, and NAs removed.") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "none") +
+  theme(axis.text.x=element_text(angle=45,hjust=1)) 
+```
+
+## Is terminal degree year associated with NOT integrating bioinformatics? 
+
+The frequency of not integrating bioinformatics does not significantly differ between the decades of the terminal degree.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+Merged_Data_Anonymous <- Merged_Data_Anonymous %>% 
+  rename(`Decade of Degree` = `Q14 In which year did you earn your highest academic degree?`) %>% 
+  mutate(`Decade of Degree` = case_when(`Decade of Degree` == "2010-2019" ~ "2010s",
+                                        `Decade of Degree` == "2000-2009" ~ "2000s",
+                                        `Decade of Degree` == "1990-1999" ~ "1990s",
+                                        `Decade of Degree` == "1990-1999" ~ "1990s",
+                                        `Decade of Degree` == "1980-1989" ~ "1980s",
+                                        is.na(`Decade of Degree`) ~ "Unknown Decade",
+                                        TRUE ~ `Decade of Degree`))
+
+# Select `Decade of Degree` & "I lack" level of challenge columns, replace names & make data tidy
+teaching_df <- Merged_Data_Anonymous %>% 
+  select(`Decade of Degree`, 
+         Q3TeachBioinfor) %>% 
+  mutate(DontTeachBioinfor = str_detect(Q3TeachBioinfor, "not"))
+
+# Find decades with <30 participants (and unknown) to remove later
+Decade_count <- Merged_Data_Anonymous %>% 
+  count(`Decade of Degree`)
+Decade_keep <- Decade_count %>% 
+  filter(n >30) %>% 
+  pull(`Decade of Degree`)
+
+
+# Conduct test for association between degree decade and not teaching bioinformatics
+# count "Don't teach bioinformatics" for each decade
+NotTeachBioinfo_Decade_count <-  teaching_df %>% 
+  filter(`Decade of Degree` %in% Decade_keep) %>% 
+  group_by(`Decade of Degree`) %>% 
+  count(DontTeachBioinfor, name = "count") %>% 
+  mutate(proportion = count / sum(count))
+
+# hypothesis test: chi-squared after removing decades with few responses
+teaching_df %>% 
+  filter(`Decade of Degree` %in% Decade_keep) %>% 
+  drop_na() %>% 
+  chisq_test(DontTeachBioinfor ~ `Decade of Degree`)
+```
+
+```{r }
+# plot with TeachBioinfor frequency by decade
+NotTeachBioinfo_Decade_count %>%
+  filter(DontTeachBioinfor == FALSE) %>% # therefore, integrate bioinformatics
+  ggplot(aes(x=`Decade of Degree`, 
+             y=proportion))+
+  geom_bar(stat = "Identity")+
+  labs(y = "percentage of respondents", x= "") +
+  scale_y_continuous(labels = scales::percent)  +
+  theme_gray(base_size = 20, base_family = "sans") +
+  theme(line = element_line(colour = "black"), 
+        rect = element_rect(fill = "white", linetype = 0, colour = NA))+
+  theme(legend.background = element_rect(), 
+        legend.position = "bottom",
+        legend.title = element_blank()) +
+  theme(panel.grid.major =
+          element_line(colour = "grey"),
+        panel.grid.minor = element_blank(),
+        strip.background = element_rect())+
+  theme(axis.title.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  theme(strip.text.x = element_text(size = 18, face = "bold"))+
+  theme(plot.background = element_rect(fill = "white"))+
+  theme(panel.background = element_rect(fill = "white"))+
+  theme(panel.grid.major.y = element_blank())+
+  theme(axis.line = element_line(colour = "black", linewidth = 0.5))+
+  coord_flip()+
+  theme(axis.text = element_text(size = 18)) +
+  theme(panel.grid.minor=element_blank())
+```
+
+## Is level of training associated with NOT integrating bioinformatics? (New 3/2023)
+
+Participants could choose multiple responses for their level of training. For this analysis, each participant was described by their highest level of training in the following order: 
+
+1. "At Least Some Coursework" includes "graduate degree", "post-graduate certificate", "graduate courses", "undergraduate degree" (and items below).
+2. "At Least Workshops/Bootcamps" includes "workshops or bootcamp" (and items below).
+3. "Self-taught Only" includes "self-taught# (and item below).
+4. "No training" includes "no training/experience" only.
+5. If no response (NA), then "Unknown Training".
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+Merged_Data_Anonymous <- Merged_Data_Anonymous %>% 
+  rename(`Bioinformatics Training` = `Q12 Which of the following best describes your level of bioinformatics training? Select ALL that apply.`) %>%
+  mutate(TrainingGroups = case_when(str_detect(`Bioinformatics Training`, "graduate") ~ "At Least Some Coursework",
+                                    str_detect(`Bioinformatics Training`, "workshops") ~ "At Least Workshops/Bootcamps",
+                                    str_detect(`Bioinformatics Training`, "self") ~ "Self-taught Only",
+                                    str_detect(`Bioinformatics Training`, "no training/experience") ~ "No Training",
+                                    is.na(`Bioinformatics Training`) ~ "Unknown Training",
+                                    TRUE ~ "Unknown Training"),
+  )
+```
+
+Perform chi-squared test for association between degree decade and level of bioinformatics training.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+# hypothesis test: chi-squared after removing decades with few responses
+teaching_df2 <- Merged_Data_Anonymous %>% 
+  select(TrainingGroups, 
+         Q3TeachBioinfor) %>% 
+  mutate(DontTeachBioinfor = str_detect(Q3TeachBioinfor, "not"))
+teaching_df2 %>% 
+  drop_na() %>% 
+  chisq_test(DontTeachBioinfor ~ TrainingGroups)
+
+# count "Don't teach bioinformatics" for each Training Group
+NotTeachBioinfo_Training_count <-  teaching_df2 %>% 
+  drop_na() %>% 
+  group_by(TrainingGroups) %>% 
+  count(DontTeachBioinfor, name = "count") %>% 
+  mutate(proportion = count / sum(count))
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+NotTeachBioinfo_Training_count %>%
+  filter(DontTeachBioinfor == FALSE) %>% 
+  ggplot(aes(x=factor(TrainingGroups, levels = c("Unknown Training", "No Training", "Self-taught Only",
+                                                 "At Least Workshops/Bootcamps","At Least Some Coursework")), 
+             y=proportion)) +
+  geom_bar(stat = "Identity")+
+  labs(y = "percentage of respondents", x= "") +
+  scale_y_continuous(labels = scales::percent)  +
+  theme_gray(base_size = 20, base_family = "sans") +
+  theme(line = element_line(colour = "black"), 
+        rect = element_rect(fill = "white", linetype = 0, colour = NA))+
+  theme(legend.background = element_rect(), 
+        legend.position = "bottom",
+        legend.title = element_blank()) +
+  theme(panel.grid.major =
+          element_line(colour = "grey"),
+        panel.grid.minor = element_blank(),
+        strip.background = element_rect())+
+  theme(axis.title.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  theme(strip.text.x = element_text(size = 18, face = "bold"))+
+  theme(plot.background = element_rect(fill = "white"))+
+  theme(panel.background = element_rect(fill = "white"))+
+  theme(panel.grid.major.y = element_blank())+
+  theme(axis.line = element_line(colour = "black", linewidth = 0.5))+
+  coord_flip()+
+  theme(axis.text = element_text(size = 18)) +
+  theme(panel.grid.minor=element_blank())
+```
+
+Some training in bioinformatics, even if only self-taught or a short-term workshop/bootcamp, significantly increases the likelihood of teaching a course that integrates bioinformatics from 11% to >60%.
+
+# Multiple component analysis (MCA) using FactoMineR 
+
+The data set was explored using multiple component analysis (Husson, F., Le, S., Pages, J. 2010. *Exploratory Multivariate Analysis by Example Using R*. Chapman and Hall.). 
+
+## Selection of active and supplementary variables
+
+We will use the survey responses regarding barriers as the active variables, and the descriptor variables explored in Chapter 2 (gender, URM, etc.) will be used as supplementary variables. To start, we'll create a data frame only with the active variables, removing duplicate rows in the process. 
+
+```{r}
+library(FactoMineR)
+require(factoextra)
+Active_Vars_df <- Merged_Data_Anonymous2 %>% 
+  select(respID, `I lack expertise in bioinformatics.`:`My student population lacks interest in bioinformatics....30`) %>% 
+  distinct()
+```
+
+If a respondent did not face a particular barrier, then their response to the challenge level questions was NA. These NA's will be changed to "Not a challenge".
+
+```{r}
+Active_Vars_df <- Active_Vars_df %>% 
+  replace(is.na(.), "Not a challenge")
+```
+
+We will create another data frame with desired supplementary variables (removing duplicate rows). Then, we combine the two data frames and move the `respID` column to row names  before preceding with MCA.
+
+```{r}
+Supp_Vars_df <- Merged_Data_Anonymous2 %>% 
+  select(respID, Gender, URM, BASIC2018_bins_text.Current, URM, MSI_status, Q14DegreeYear) %>% 
+  distinct()
+All_Vars_df <- Active_Vars_df %>% left_join(Supp_Vars_df, by = "respID") %>% 
+  column_to_rownames(var = "respID")
+# shorten variable names for readability on MCA plots
+All_Vars_df <- All_Vars_df %>% 
+  rename(Expertise = `I lack expertise in bioinformatics.`,
+         Experience = `I lack experience in teaching bioinformatics....22`,
+         Time = `I lack time to restructure course(s).`,
+         Autonomy = `I lack the autonomy to add content to my course(s)....24`,
+         Space = `I lack space in my course(s) to add content....25`,
+         Materials = `I lack curricular materials....26`,
+         My_Tech = `I lack appropriate technical resources (internet access/software/hardware/IT support)....27`,
+         Student_Tech = `My student population lacks access to appropriate technical resources (internet access/software/hardware/IT support)....28`, 
+         Prereqs = `My student population lacks prerequisite skills`,
+         Interest = `My student population lacks interest in bioinformatics....30`,
+         Carnegie = BASIC2018_bins_text.Current,
+         Degree_Year = `Q14DegreeYear`
+  )
+```
+
+```{r}
+# following is tweaked from Help examples
+results.MCA <- MCA(All_Vars_df, quali.sup = 11:15)
+summary(results.MCA)
+plot(results.MCA, invisible = c("var", "quali.sup"), cex=0.7)
+plot(results.MCA, invisible = c("ind", "quali.sup"), cex=0.6)
+plot(results.MCA, invisible = c("ind", "var"), cex=0.5, max.overlaps = 1000)
+plot(results.MCA, invisible = c("quali.sup"), cex=0.8)
+dimdesc(results.MCA)
+plotellipses(results.MCA, invisible = c("ind"), keepvar = 11)
+plotellipses(results.MCA, axes = c(1,2), invisible = c("ind"), keepvar = 12, max.overlaps = 10)
+plotellipses(results.MCA, axes = c(1,2), invisible = c("ind"), keepvar = 14, max.overlaps = 10)
+plotellipses(results.MCA, axes = c(1,4), invisible = c("ind"), keepvar = 15, max.overlaps = 10)
+
+# following is adapted from FactoMineR YouTube video
+plot(results.MCA, invisible = c("quali.sup", "ind"), label = c("var", "quali.sup"), autoLab = "y", cex=0.7)
+plot(results.MCA, invisible = "ind", autoLab = "y", selectMod = "cos2 10", xlim = c(-4,4), cex=0.7)
+```
+
